@@ -38,11 +38,11 @@ public:
         value += queens.count() * PieceValue::PAWN;
 
         color = !color;
-        Bitboard pawns = board.pieces(PieceType::PAWN, color);
-        Bitboard knights = board.pieces(PieceType::KNIGHT, color);
-        Bitboard bishops = board.pieces(PieceType::BISHOP, color);
-        Bitboard rooks = board.pieces(PieceType::ROOK, color);
-        Bitboard queens = board.pieces(PieceType::QUEEN, color);
+        pawns = board.pieces(PieceType::PAWN, color);
+        knights = board.pieces(PieceType::KNIGHT, color);
+        bishops = board.pieces(PieceType::BISHOP, color);
+        rooks = board.pieces(PieceType::ROOK, color);
+        queens = board.pieces(PieceType::QUEEN, color);
 
         value -= pawns.count() * PieceValue::PAWN;
         value -= knights.count() * PieceValue::PAWN;
@@ -68,6 +68,8 @@ public:
             }
             board.unmakeMove(move);
         }
+
+        return bestMove;
     }
 
     void uciLoop() {
@@ -95,7 +97,7 @@ public:
 
     void handleUci() {
         std::cout << "id name MyChessEngine" << std::endl;
-        std::cout << "id author MyName" << std::endl;
+        std::cout << "id author John Byler" << std::endl;
         std::cout << "uciok" << std::endl;
     }
 
