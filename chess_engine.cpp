@@ -13,6 +13,11 @@ enum PieceValue {
     QUEEN = 900,
 };
 
+struct SearchResult {
+    Move move;
+    int value;
+};
+
 class ChessEngine {
 private:
     Board board;
@@ -53,7 +58,7 @@ public:
         return value;
     }
 
-    Move bestMove() {
+    SearchResult bestMove() {
         Movelist moves;
         movegen::legalmoves(moves, board);
 
@@ -69,7 +74,7 @@ public:
             board.unmakeMove(move);
         }
 
-        return bestMove;
+        return {bestMove, bestValue};
     }
 
     void uciLoop() {
@@ -129,8 +134,10 @@ public:
     }
 
     void handleGo() {
-        Move move = bestMove();
-        std::cout << "bestmove " << uci::moveToUci(move) << std::endl;
+        SearchResult result = bestMove();
+        Move move = result.move;
+        int score = result.value;
+        std::cout << "bestmove " << uci::moveToUci(move) << " score cp " << score << std::endl;
     }
 
     void handleUciNewGame() {
