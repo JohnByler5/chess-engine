@@ -317,6 +317,21 @@ public:
         init();
     }
 
+    Movelist sortCaptures(Movelist& moves) {
+        for (Move& move : moves) {
+            uint16_t type = move.typeOf();
+            int score = 0;
+            if (type == Move::PROMOTION) score = 1800 + int(move.promotionType() * 100);  // Will be 1800 through 2100
+            else if (type == Move::ENPASSANT) score = 100;
+            else score = PieceValues[board.at<PieceType>(move.to())];
+            move.setScore(score);
+        }
+        std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
+            return a.score() > b.score();
+        });
+        return moves;
+    }
+
     int quiescent(int alpha, int beta) {
         // Check these draws before evaluate() as they should not be in that function and in this function
         if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
@@ -329,6 +344,7 @@ public:
 
         Movelist captures;
         movegen::legalmoves<movegen::MoveGenType::CAPTURE>(captures, board);
+        captures = sortCaptures(captures);
 
         for (const Move& capture : captures) {
             if (board.isCapture(capture)) {
@@ -347,9 +363,10 @@ public:
         for (Move& move : moves) {
             uint16_t type = move.typeOf();
             int score = 0;
-            if (type == Move::PROMOTION) score = 2 + int(move.promotionType());  // Will be either 3, 4, 5, or 6
-            else if (board.isCapture(move)) score = 2;
-            else if (type == Move::CASTLING) score = 1;
+            if (type == Move::PROMOTION) score = 1000 + int(move.promotionType() * 100);  // Will be 1100 through 1400
+            else if (type == Move::ENPASSANT) score = 200;
+            else if (board.isCapture(move)) score = 100 + PieceValues[board.at<PieceType>(move.to())];  // Will be 200 through 1000
+            else if (type == Move::CASTLING) score = 100;
             move.setScore(score);
         }
         std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
@@ -364,7 +381,7 @@ public:
             return ResultValues[GameResult::DRAW];
         }
         
-        if (depth == 0) return evaluate();  // quiescent(alpha, beta);
+        if (depth == 0) return quiescent(alpha, beta);
 
         Movelist moves;
         movegen::legalmoves(moves, board);
@@ -400,10 +417,11 @@ public:
         for (Move& move : moves) {
             uint16_t type = move.typeOf();
             int score = 0;
-            if (move == bestPreviousMove) score = 7;
-            else if (type == Move::PROMOTION) score = 2 + int(move.promotionType());  // Will be either 3, 4, 5, or 6
-            else if (board.isCapture(move)) score = 2;
-            else if (type == Move::CASTLING) score = 1;
+            if (move == bestPreviousMove) score = 1500;
+            else if (type == Move::PROMOTION) score = 1000 + int(move.promotionType() * 100);  // Will be 1100 through 1400
+            else if (type == Move::ENPASSANT) score = 200;
+            else if (board.isCapture(move)) score = 100 + PieceValues[board.at<PieceType>(move.to())];  // Will be 200 through 1000
+            else if (type == Move::CASTLING) score = 100;
             move.setScore(score);
         }
         std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
@@ -489,7 +507,7 @@ public:
     }
 
     void handleUci() {
-        std::cout << "id name ChessEngine-v0.1.0" << std::endl;
+        std::cout << "id name ChessEngine-v0.1.1" << std::endl;
         std::cout << "id author John Byler" << std::endl;
         std::cout << "uciok" << std::endl;
     }
@@ -547,16 +565,16 @@ public:
 int main() {
     initTables(); 
 
-    // std::string fen = constants::STARTPOS;
-    std::string fen = "r3r1k1/1ppq1ppp/p1np1n2/2b1p3/2B1P1b1/P1PPBN2/1P1NQPPP/R4RK1 w - - 0 11";
+    std::string fen = constants::STARTPOS;
+    // std::string fen = "r3r1k1/1ppq1ppp/p1np1n2/2b1p3/2B1P1b1/P1PPBN2/1P1NQPPP/R4RK1 w - - 0 11";
     std::string logPath = "/Users/john/VS Code Projects/C++/chess-engine/log.txt";
 
-    ChessEngine engine(fen, logPath);
-    SearchResult result = engine.bestMove(1000);
-    std::cout << "Selected: " << result.move << " - " << result.value << std::endl;
-
     // ChessEngine engine(fen, logPath);
-    // engine.uciLoop();
+    // SearchResult result = engine.bestMove(1000);
+    // std::cout << "Selected: " << result.move << " - " << result.value << std::endl;
+
+    ChessEngine engine(fen, logPath);
+    engine.uciLoop();
 
     return 0;
 }
