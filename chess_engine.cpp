@@ -2,6 +2,7 @@
 #include <map>
 #include <chrono>
 #include <algorithm>
+#include <fstream>
 #include "chess.hpp"
 
 using namespace chess;
@@ -16,7 +17,7 @@ std::map<PieceType, int> PieceValues = {
 
 std::map<GameResult, int> ResultValues = {
     {GameResult::WIN, SHRT_MAX},
-    {GameResult::LOSE, SHRT_MIN},
+    {GameResult::LOSE, -SHRT_MAX},
     {GameResult::DRAW, 0},
 };
 
@@ -195,13 +196,36 @@ struct SearchResult {
 
 class ChessEngine {
 private:
-    Board board = Board();
-    int mgValue = 0;
-    int egValue = 0;
+    Board board;
+    int mgValue;
+    int egValue;
+    std::ofstream logFile;
     
 public:
-    ChessEngine(const std::string& fen) {
-        setFen(fen);
+    ChessEngine(const std::string& fen, std::string& logPath) : board(Board(fen)), mgValue(0), egValue(0), logFile(logPath) {
+        init();
+    }
+
+    void init() {
+        Color color = board.sideToMove();
+        mgValue = 0;
+        egValue = 0;
+        for (int square = 0; square < 64; ++square) {
+            Piece piece = board.at(Square(square));
+            if (piece == Piece::NONE) {
+                continue;
+            }
+            PieceType type = piece.type();
+
+            if (piece.color() == color) {
+                mgValue += TableMG[type][square];
+                egValue += TableEG[type][square];
+            } else {
+                int flippedSquare = square ^ 56;
+                mgValue -= TableMG[type][flippedSquare];
+                egValue -= TableEG[type][flippedSquare];
+            }
+        }
     }
 
     Board getBoard() {
@@ -290,25 +314,7 @@ public:
     void setFen(const std::string& fen) {
         board.setFen(fen);
 
-        Color color = board.sideToMove();
-        mgValue = 0;
-        egValue = 0;
-        for (int square = 0; square < 64; ++square) {
-            Piece piece = board.at(Square(square));
-            if (piece == Piece::NONE) {
-                continue;
-            }
-            PieceType type = piece.type();
-
-            if (piece.color() == color) {
-                mgValue += TableMG[type][square];
-                egValue += TableEG[type][square];
-            } else {
-                int flippedSquare = square ^ 56;
-                mgValue -= TableMG[type][flippedSquare];
-                egValue -= TableEG[type][flippedSquare];
-            }
-        }
+        init();
     }
 
     int quiescent(int alpha, int beta) {
@@ -337,7 +343,7 @@ public:
         return alpha;
     }
 
-    int minimax(int depth, int alpha, int beta, int maxSeconds, std::chrono::time_point<std::chrono::system_clock> startTime) {
+    int minimax(int depth, int alpha, int beta, float maxSeconds, std::chrono::time_point<std::chrono::system_clock>& startTime) {
         // Check these draws before quiescent() as they should not be both in evaluate function and in this function
         if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
             return ResultValues[GameResult::DRAW];
@@ -360,26 +366,25 @@ public:
             int value = -minimax(depth - 1, -beta, -alpha, maxSeconds, startTime);
             unmakeMove(move);
 
-            if (value > bestValue) bestValue = value;
-            if (value > alpha) alpha = value;
-            if (alpha >= beta) break;
-
             std::chrono::time_point<std::chrono::system_clock> currentTime = std::chrono::system_clock::now();
             float elapsedSeconds = std::chrono::duration<float>(currentTime - startTime).count();
             if (elapsedSeconds > maxSeconds) {
-                break;
+                return INT_MAX;
             }
+
+            if (value > bestValue) bestValue = value;
+            if (value > alpha) alpha = value;
+            if (alpha >= beta) break;
         }
 
         return bestValue;
     }
 
     Movelist sortMoves(Movelist& moves, Move& bestPreviousMove) {
-        if (bestPreviousMove == Move::NO_MOVE) {
-            return moves;
-        }
         for (Move& move : moves) {
+            // uint16_t type = move.typeOf();
             if (move == bestPreviousMove) move.setScore(1);
+            // else if (type == Move::PROMOTION) move.setScore(1 + int(move.promotionType()));  // Will go be either 2, 3, 4, or 5
             else move.setScore(0);
         }
         std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
@@ -388,11 +393,11 @@ public:
         return moves;
     }
 
-    SearchResult minimax(int depth, int maxSeconds, std::chrono::time_point<std::chrono::system_clock>& startTime, Move& bestPreviousMove) {
+    SearchResult minimaxStart(int depth, float maxSeconds, std::chrono::time_point<std::chrono::system_clock>& startTime, Move& bestPreviousMove) {
         int alpha = INT_MIN + 1;
         int beta = INT_MAX;
         int bestValue = INT_MIN;
-        Move bestMove;
+        Move bestMove = Move::NULL_MOVE;
 
         Movelist moves;
         movegen::legalmoves(moves, board);
@@ -403,47 +408,57 @@ public:
             int value = -minimax(depth, -beta, -alpha, maxSeconds, startTime);
             unmakeMove(move);
 
+            std::chrono::time_point<std::chrono::system_clock> currentTime = std::chrono::system_clock::now();
+            float elapsedSeconds = std::chrono::duration<float>(currentTime - startTime).count();
+            if (elapsedSeconds > maxSeconds) {
+                break;
+            }
+
             if (value > bestValue) {
                 bestValue = value;
                 bestMove = move;
             }
             if (value > alpha) alpha = value;
             if (alpha >= beta) break;
-
-            std::chrono::time_point<std::chrono::system_clock> currentTime = std::chrono::system_clock::now();
-            float elapsedSeconds = std::chrono::duration<float>(currentTime - startTime).count();
-            if (elapsedSeconds > maxSeconds) {
-                break;
-            }
         }
 
         return {bestMove, bestValue};
     }
 
     SearchResult bestMove(float maxSeconds) {
+        logFile << "Max Seconds: " << maxSeconds << std::endl;
+
         std::chrono::time_point<std::chrono::system_clock> startTime = std::chrono::system_clock::now();
 
-        depth = 0;
-        SearchResult result = minimax(depth, maxSeconds, startTime, Move::NO_MOVE);
+        int depth = 0;
+        SearchResult result = {Move::NULL_MOVE, INT_MIN};
         while (true) {
-            ++depth
-            SearchResult result = minimax(depth, maxSeconds, startTime, result.move);
+            SearchResult newResult = minimaxStart(depth, maxSeconds, startTime, result.move);
+            if (newResult.move == Move::NULL_MOVE) break;
+            result = newResult; 
 
             std::chrono::time_point<std::chrono::system_clock> currentTime = std::chrono::system_clock::now();
             float elapsedSeconds = std::chrono::duration<float>(currentTime - startTime).count();
+            logFile << "Depth: " << depth << " - Move: " << result.move << " - Value: " << result.value  << " - Elapsed: " << elapsedSeconds << std::endl;
+
             if (elapsedSeconds > maxSeconds) {
                 break;
             }
+
+            ++depth;
         }
+
+        logFile << "Selected: " << result.move << " - " << result.value << std::endl;
 
         return result;
     }
 
     void uciLoop() {
         std::string line;
+        std::string token;
         while (getline(std::cin, line)) {
             std::istringstream iss(line);
-            iss >> std::string token;
+            iss >> token;
 
             if (token == "uci") handleUci();
             else if (token == "isready") handleIsReady();
@@ -487,11 +502,13 @@ public:
 
     void handleGo(std::istringstream& iss) {
         float maxSeconds = 1.0;
-        while (iss >> std::string param) {
-            if ((param == "wtime") == (board.sideToMove() == WHITE)) {  // Will be "btime" if not "wtime"
+        std::string param;
+        while (iss >> param) {
+            if (((param == "wtime") && (board.sideToMove() == Color::WHITE)) || ((param == "btime") && (board.sideToMove() == Color::BLACK))) {
                 iss >> maxSeconds;
                 maxSeconds /= 1000;  // Convert milliseconds to seconds
                 maxSeconds /= 30;  // Assuming that 1/30th is a good portion of time to use
+                break;
             }
         }
 
@@ -511,14 +528,16 @@ public:
 int main() {
     initTables(); 
 
-    // std::string fen = "r1bqkb1r/ppp2ppp/2n2n2/4p1N1/2p1P3/2NP4/PPP2PPP/R1BQK2R b KQkq - 1 6";  // "r1bqkb1r/ppp2ppp/2n2n2/3pp1N1/2B1P3/3P4/PPP2PPP/RNBQK2R b KQkq - 0 5";
-    // ChessEngine engine(fen);
+    std::string fen = constants::STARTPOS;
+    // std::string fen = "rnbqkbnr/pppppppp/8/8/8/P7/1PPPPPPP/RNBQKBNR b KQkq - 0 1";
+    std::string logPath = "/Users/john/VS Code Projects/C++/chess-engine/log.txt";
 
-    // SearchResult result = engine.bestMove(5);
-    // std::cout << "Selected: " << result.move << " - " << result.value << std::endl;
+    ChessEngine engine(fen, logPath);
+    SearchResult result = engine.bestMove(1000);
+    std::cout << "Selected: " << result.move << " - " << result.value << std::endl;
 
-    ChessEngine engine(constants::STARTPOS);
-    engine.uciLoop();
+    // ChessEngine engine(fen, logPath);
+    // engine.uciLoop();
 
     return 0;
 }
