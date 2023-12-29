@@ -342,6 +342,21 @@ public:
         }
         return alpha;
     }
+    
+    Movelist sortMoves(Movelist& moves) {
+        for (Move& move : moves) {
+            uint16_t type = move.typeOf();
+            int score = 0;
+            if (type == Move::PROMOTION) score = 2 + int(move.promotionType());  // Will be either 3, 4, 5, or 6
+            else if (board.isCapture(move)) score = 2;
+            else if (type == Move::CASTLING) score = 1;
+            move.setScore(score);
+        }
+        std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
+            return a.score() > b.score();
+        });
+        return moves;
+    }
 
     int minimax(int depth, int alpha, int beta, float maxSeconds, std::chrono::time_point<std::chrono::system_clock>& startTime) {
         // Check these draws before quiescent() as they should not be both in evaluate function and in this function
@@ -359,6 +374,7 @@ public:
             if (board.inCheck()) return ResultValues[GameResult::LOSE];
             return ResultValues[GameResult::DRAW];
         }
+        moves = sortMoves(moves);
 
         int bestValue = INT_MIN;
         for (const Move& move : moves) {
@@ -380,12 +396,15 @@ public:
         return bestValue;
     }
 
-    Movelist sortMoves(Movelist& moves, Move& bestPreviousMove) {
+    Movelist sortStartMoves(Movelist& moves, Move& bestPreviousMove) {
         for (Move& move : moves) {
-            // uint16_t type = move.typeOf();
-            if (move == bestPreviousMove) move.setScore(1);
-            // else if (type == Move::PROMOTION) move.setScore(1 + int(move.promotionType()));  // Will go be either 2, 3, 4, or 5
-            else move.setScore(0);
+            uint16_t type = move.typeOf();
+            int score = 0;
+            if (move == bestPreviousMove) score = 7;
+            else if (type == Move::PROMOTION) score = 2 + int(move.promotionType());  // Will be either 3, 4, 5, or 6
+            else if (board.isCapture(move)) score = 2;
+            else if (type == Move::CASTLING) score = 1;
+            move.setScore(score);
         }
         std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
             return a.score() > b.score();
@@ -401,7 +420,7 @@ public:
 
         Movelist moves;
         movegen::legalmoves(moves, board);
-        moves = sortMoves(moves, bestPreviousMove);
+        moves = sortStartMoves(moves, bestPreviousMove);
         
         for (const Move& move : moves) {
             makeMove(move);
@@ -470,7 +489,7 @@ public:
     }
 
     void handleUci() {
-        std::cout << "id name ChessEngine-v0.0.1" << std::endl;
+        std::cout << "id name ChessEngine-v0.1.0" << std::endl;
         std::cout << "id author John Byler" << std::endl;
         std::cout << "uciok" << std::endl;
     }
@@ -528,8 +547,8 @@ public:
 int main() {
     initTables(); 
 
-    std::string fen = constants::STARTPOS;
-    // std::string fen = "rnbqkbnr/pppppppp/8/8/8/P7/1PPPPPPP/RNBQKBNR b KQkq - 0 1";
+    // std::string fen = constants::STARTPOS;
+    std::string fen = "r3r1k1/1ppq1ppp/p1np1n2/2b1p3/2B1P1b1/P1PPBN2/1P1NQPPP/R4RK1 w - - 0 11";
     std::string logPath = "/Users/john/VS Code Projects/C++/chess-engine/log.txt";
 
     ChessEngine engine(fen, logPath);
