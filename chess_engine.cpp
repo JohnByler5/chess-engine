@@ -191,8 +191,44 @@ void initTables() {
 
 struct SearchResult {
     Move move;
-    int value;
+    int score;
+    bool complete = true;
 };
+
+struct TranspositionEntry {
+    uint64_t hashKey;
+    uint16_t depth;
+    int alpha;
+    int beta;
+    SearchResult result;
+};
+
+const size_t TABLE_SIZE = 1024 * 1024 * 1024 / sizeof(TranspositionEntry);  // 1GB of memory space, should be 32 bytes per entry
+
+
+class TranspositionTable {
+private:
+    TranspositionEntry* table;
+    size_t tableSize;
+
+public:
+    TranspositionTable(size_t size) : tableSize(size) {
+        table = new TranspositionEntry[tableSize]();
+    }
+
+    ~TranspositionTable() {
+        delete[] table;
+    }
+
+    void set(TranspositionEntry& entry) {
+        table[entry.hashKey % tableSize] = entry;
+    }
+
+    TranspositionEntry& get(uint64_t hashKey) {
+        return table[hashKey % tableSize];
+    }
+};
+
 
 class ChessEngine {
 private:
@@ -200,9 +236,11 @@ private:
     int mgValue;
     int egValue;
     std::ofstream logFile;
+    TranspositionTable transpositionTable;
     
 public:
-    ChessEngine(const std::string& fen, std::string& logPath) : board(Board(fen)), mgValue(0), egValue(0), logFile(logPath) {
+    ChessEngine(const std::string& fen, std::string& logPath) : board(Board(fen)), mgValue(0), egValue(0), logFile(logPath), transpositionTable(TABLE_SIZE) {
+        // std::cout 
         init();
     }
 
@@ -233,7 +271,7 @@ public:
     }
 
     int evaluate() {
-        int value = 0;
+        int score = 0;
 
         int gamePhase = 0;
         for (const std::pair<PieceType, int>& pair : PieceValues) {
@@ -242,9 +280,9 @@ public:
         }
 
         if (gamePhase > 24) gamePhase = 24;  // In case of early promotion
-        value += (mgValue * gamePhase + egValue * (24 - gamePhase)) / 24;
+        score += (mgValue * gamePhase + egValue * (24 - gamePhase)) / 24;
 
-        return value;
+        return score;
     }
 
     void updateEvaluation(const Move& move) {
@@ -317,107 +355,11 @@ public:
         init();
     }
 
-    Movelist sortCaptures(Movelist& moves) {
+    Movelist sortMoves(Movelist& moves, Move& previousBestMove) {
         for (Move& move : moves) {
             uint16_t type = move.typeOf();
             int score = 0;
-            if (type == Move::PROMOTION) score = 1800 + int(move.promotionType() * 100);  // Will be 1800 through 2100
-            else if (type == Move::ENPASSANT) score = 100;
-            else score = PieceValues[board.at<PieceType>(move.to())];
-            move.setScore(score);
-        }
-        std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
-            return a.score() > b.score();
-        });
-        return moves;
-    }
-
-    int quiescent(int alpha, int beta) {
-        // Check these draws before evaluate() as they should not be in that function and in this function
-        if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
-            return ResultValues[GameResult::DRAW];
-        }
-
-        int standPat = evaluate();
-        if (standPat >= beta) return beta;
-        if (alpha < standPat) alpha = standPat;
-
-        Movelist captures;
-        movegen::legalmoves<movegen::MoveGenType::CAPTURE>(captures, board);
-        captures = sortCaptures(captures);
-
-        for (const Move& capture : captures) {
-            if (board.isCapture(capture)) {
-                makeMove(capture);
-                int score = -quiescent(-beta, -alpha);
-                unmakeMove(capture);
-
-                if (score >= beta) return beta;
-                if (score > alpha) alpha = score;
-            }
-        }
-        return alpha;
-    }
-    
-    Movelist sortMoves(Movelist& moves) {
-        for (Move& move : moves) {
-            uint16_t type = move.typeOf();
-            int score = 0;
-            if (type == Move::PROMOTION) score = 1000 + int(move.promotionType() * 100);  // Will be 1100 through 1400
-            else if (type == Move::ENPASSANT) score = 200;
-            else if (board.isCapture(move)) score = 100 + PieceValues[board.at<PieceType>(move.to())];  // Will be 200 through 1000
-            else if (type == Move::CASTLING) score = 100;
-            move.setScore(score);
-        }
-        std::sort(moves.begin(), moves.end(), [](const Move& a, const Move& b) {
-            return a.score() > b.score();
-        });
-        return moves;
-    }
-
-    int minimax(int depth, int alpha, int beta, float maxSeconds, std::chrono::time_point<std::chrono::system_clock>& startTime) {
-        // Check these draws before quiescent() as they should not be both in evaluate function and in this function
-        if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
-            return ResultValues[GameResult::DRAW];
-        }
-        
-        if (depth == 0) return quiescent(alpha, beta);
-
-        Movelist moves;
-        movegen::legalmoves(moves, board);
-
-        // Check these conditions after quiescent() in order to not search legalmoves within evaluate function
-        if (moves.empty()) {
-            if (board.inCheck()) return ResultValues[GameResult::LOSE];
-            return ResultValues[GameResult::DRAW];
-        }
-        moves = sortMoves(moves);
-
-        int bestValue = INT_MIN;
-        for (const Move& move : moves) {
-            makeMove(move);
-            int value = -minimax(depth - 1, -beta, -alpha, maxSeconds, startTime);
-            unmakeMove(move);
-
-            std::chrono::time_point<std::chrono::system_clock> currentTime = std::chrono::system_clock::now();
-            float elapsedSeconds = std::chrono::duration<float>(currentTime - startTime).count();
-            if (elapsedSeconds > maxSeconds) {
-                return INT_MAX;
-            }
-
-            if (value > bestValue) bestValue = value;
-            if (value > alpha) alpha = value;
-            if (alpha >= beta) break;
-        }
-
-        return bestValue;
-    }
-
-    Movelist sortStartMoves(Movelist& moves, Move& bestPreviousMove) {
-        for (Move& move : moves) {
-            uint16_t type = move.typeOf();
-            int score = 0;
-            if (move == bestPreviousMove) score = 1500;
+            if (move == previousBestMove) score = 1500;
             else if (type == Move::PROMOTION) score = 1000 + int(move.promotionType() * 100);  // Will be 1100 through 1400
             else if (type == Move::ENPASSANT) score = 200;
             else if (board.isCapture(move)) score = 100 + PieceValues[board.at<PieceType>(move.to())];  // Will be 200 through 1000
@@ -430,36 +372,99 @@ public:
         return moves;
     }
 
-    SearchResult minimaxStart(int depth, float maxSeconds, std::chrono::time_point<std::chrono::system_clock>& startTime, Move& bestPreviousMove) {
-        int alpha = INT_MIN + 1;
-        int beta = INT_MAX;
-        int bestValue = INT_MIN;
-        Move bestMove = Move::NULL_MOVE;
+    SearchResult quiescent(int alpha, int beta) {
+        uint64_t hashKey = board.hash();
+        TranspositionEntry& foundEntry = transpositionTable.get(hashKey);
+        if (foundEntry.hashKey == hashKey && foundEntry.alpha <= alpha && foundEntry.beta >= beta) {
+            return foundEntry.result;
+        }
+        TranspositionEntry entry = {hashKey, 0, alpha, beta, {Move::NULL_MOVE, INT_MIN + 1, true}};
+
+        if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
+            entry.result.score = ResultValues[GameResult::DRAW];
+            transpositionTable.set(entry);
+            return entry.result;
+        }
+
+        int standPat = evaluate();
+        if (standPat > entry.result.score) entry.result.score = standPat;
+        if (standPat > alpha) alpha = standPat;
+        if (alpha >= beta) return entry.result;
+
+        Movelist captures;
+        movegen::legalmoves<movegen::MoveGenType::CAPTURE>(captures, board);
+        captures = sortMoves(captures, foundEntry.result.move);
+
+        for (const Move& capture : captures) {
+            if (board.isCapture(capture)) {
+                makeMove(capture);
+                SearchResult result = quiescent(-beta, -alpha);
+                int score = -result.score;
+                unmakeMove(capture);
+
+                if (score > entry.result.score) {
+                    entry.result.score = score;
+                    entry.result.move = capture;
+                }
+                if (score > alpha) alpha = score;
+                if (alpha >= beta) break;
+            }
+        }
+
+        transpositionTable.set(entry);
+        return entry.result;
+    }
+
+    SearchResult minimax(uint16_t depth, int alpha, int beta, float maxSeconds, std::chrono::time_point<std::chrono::system_clock>& startTime) {
+        if (depth == 0) return quiescent(alpha, beta);
+
+        uint64_t hashKey = board.hash();
+        TranspositionEntry foundEntry = transpositionTable.get(hashKey);
+        if (foundEntry.hashKey == hashKey && foundEntry.depth >= depth && foundEntry.alpha <= alpha && foundEntry.beta >= beta) {
+            return foundEntry.result;
+        }
+        TranspositionEntry entry = {hashKey, depth, alpha, beta, {Move::NULL_MOVE, INT_MIN + 1, true}};
+
+        if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
+            entry.result.score = ResultValues[GameResult::DRAW];
+            transpositionTable.set(entry);
+            return entry.result;
+        }
 
         Movelist moves;
         movegen::legalmoves(moves, board);
-        moves = sortStartMoves(moves, bestPreviousMove);
-        
+        if (moves.empty()) {
+            if (board.inCheck()) entry.result.score = ResultValues[GameResult::LOSE];
+            else entry.result.score = ResultValues[GameResult::DRAW];
+            transpositionTable.set(entry);
+        }
+        moves = sortMoves(moves, foundEntry.result.move);
+
         for (const Move& move : moves) {
             makeMove(move);
-            int value = -minimax(depth, -beta, -alpha, maxSeconds, startTime);
+            SearchResult result = minimax(depth - 1, -beta, -alpha, maxSeconds, startTime);
             unmakeMove(move);
 
             std::chrono::time_point<std::chrono::system_clock> currentTime = std::chrono::system_clock::now();
             float elapsedSeconds = std::chrono::duration<float>(currentTime - startTime).count();
-            if (elapsedSeconds > maxSeconds) {
-                break;
+            if (elapsedSeconds > maxSeconds || result.complete == false) {
+                entry.result.complete = false;
+                return entry.result;
             }
 
-            if (value > bestValue) {
-                bestValue = value;
-                bestMove = move;
+            int score = -result.score;
+            if (score > entry.result.score) {
+                entry.result.score = score;
+                entry.result.move = move;
             }
-            if (value > alpha) alpha = value;
+            if (score > alpha) {
+                alpha = score;
+            }
             if (alpha >= beta) break;
         }
 
-        return {bestMove, bestValue};
+        transpositionTable.set(entry);
+        return entry.result;
     }
 
     SearchResult bestMove(float maxSeconds) {
@@ -467,16 +472,16 @@ public:
 
         std::chrono::time_point<std::chrono::system_clock> startTime = std::chrono::system_clock::now();
 
-        int depth = 0;
+        uint16_t depth = 0;
         SearchResult result = {Move::NULL_MOVE, INT_MIN};
         while (true) {
-            SearchResult newResult = minimaxStart(depth, maxSeconds, startTime, result.move);
-            if (newResult.move == Move::NULL_MOVE) break;
+            SearchResult newResult = minimax(depth, INT_MIN + 1, INT_MAX, maxSeconds, startTime);
+            if (newResult.complete == false) break;
             result = newResult; 
 
             std::chrono::time_point<std::chrono::system_clock> currentTime = std::chrono::system_clock::now();
             float elapsedSeconds = std::chrono::duration<float>(currentTime - startTime).count();
-            logFile << "Depth: " << depth << " - Move: " << result.move << " - Value: " << result.value  << " - Elapsed: " << elapsedSeconds << std::endl;
+            logFile << "Depth: " << depth << " - Move: " << result.move << " - Score: " << result.score  << " - Elapsed: " << elapsedSeconds << std::endl;
 
             if (elapsedSeconds > maxSeconds) {
                 break;
@@ -485,7 +490,7 @@ public:
             ++depth;
         }
 
-        logFile << "Selected: " << result.move << " - " << result.value << std::endl;
+        logFile << "Selected: " << result.move << " - " << result.score << std::endl;
 
         return result;
     }
@@ -507,7 +512,7 @@ public:
     }
 
     void handleUci() {
-        std::cout << "id name ChessEngine-v0.1.1" << std::endl;
+        std::cout << "id name ChessEngine-v0.2.0" << std::endl;
         std::cout << "id author John Byler" << std::endl;
         std::cout << "uciok" << std::endl;
     }
@@ -551,7 +556,7 @@ public:
 
         SearchResult result = bestMove(maxSeconds);
         Move move = result.move;
-        int score = result.value;
+        int score = result.score;
         std::cout << "bestmove " << uci::moveToUci(move) << " score cp " << score << std::endl;
     }
 
@@ -562,19 +567,20 @@ public:
     }
 };
 
-int main() {
-    initTables(); 
 
-    std::string fen = constants::STARTPOS;
-    // std::string fen = "r3r1k1/1ppq1ppp/p1np1n2/2b1p3/2B1P1b1/P1PPBN2/1P1NQPPP/R4RK1 w - - 0 11";
+int main() {
+    initTables();
+    
+    // std::string fen = constants::STARTPOS;
+    std::string fen = "r3r1k1/1ppq1ppp/p1np1n2/2b1p3/2B1P1b1/P1PPBN2/1P1NQPPP/R4RK1 w - - 0 11";
     std::string logPath = "/Users/john/VS Code Projects/C++/chess-engine/log.txt";
 
-    // ChessEngine engine(fen, logPath);
-    // SearchResult result = engine.bestMove(1000);
-    // std::cout << "Selected: " << result.move << " - " << result.value << std::endl;
-
     ChessEngine engine(fen, logPath);
-    engine.uciLoop();
+    SearchResult result = engine.bestMove(1000);
+    std::cout << "Selected: " << result.move << " - " << result.score << std::endl;
+
+    // ChessEngine engine(fen, logPath);
+    // engine.uciLoop();
 
     return 0;
 }
