@@ -192,7 +192,22 @@ void initTables() {
 struct SearchResult {
     Move move;
     int score;
-    bool complete = true;
+    bool complete;
+
+    SearchResult()
+        : move(Move::NULL_MOVE), score(INT_MIN + 1), complete(true) {
+    }
+
+    SearchResult(Move move, int score, bool complete=true)
+        : move(move), score(score), complete(complete) {
+    }
+};
+
+enum NodeType {
+    NONE,
+    ALL,
+    CUT,
+    PV,
 };
 
 struct TranspositionEntry {
@@ -200,32 +215,135 @@ struct TranspositionEntry {
     uint16_t depth;
     int alpha;
     int beta;
+    NodeType nodeType;
     SearchResult result;
+
+    TranspositionEntry() 
+        : hashKey(0), depth(0), alpha(0), beta(0), nodeType(NONE), result() {
+    }
+
+    TranspositionEntry(uint64_t hashKey, uint16_t depth, int alpha, int beta) 
+        : hashKey(hashKey), depth(depth), alpha(alpha), beta(beta), nodeType(NodeType::ALL), result() {
+    }
+
+    bool isValid() {
+        return nodeType != NONE;
+    }
 };
 
-const size_t TABLE_SIZE = 1024 * 1024 * 1024 / sizeof(TranspositionEntry);  // 1GB of memory space, should be 32 bytes per entry
+struct TranspositionEntryNode {
+    TranspositionEntry entry;
+    TranspositionEntryNode* next;
+    uint16_t age;
 
+    TranspositionEntryNode(const TranspositionEntry& entry, uint16_t age) : entry(entry), next(nullptr), age(age) {}
+};
+
+const size_t ENTRIES_PER_BUCKET = 4;
+const size_t TABLE_SIZE = 1024 * 1024 * 1024 / sizeof(TranspositionEntryNode) / ENTRIES_PER_BUCKET;  // 1GB of memory space, should be 32 bytes per entry
+
+enum EntryValues {
+    DEPTH = 1,
+    PV_NODE = 5,
+    AGE = 0,
+    WINDOW_SIZE = 0,  // 0 for now because window sizes of `INT_MAX - (INT_MIN + 1)` shouldn't be drastically preferred over ones of 1000
+};
 
 class TranspositionTable {
 private:
-    TranspositionEntry* table;
+    TranspositionEntryNode** table;  // Pointer to an array of pointers
     size_t tableSize;
+    uint16_t searchAge;
 
 public:
-    TranspositionTable(size_t size) : tableSize(size) {
-        table = new TranspositionEntry[tableSize]();
+    TranspositionTable(size_t size) : tableSize(size), searchAge(0) {
+        table = new TranspositionEntryNode*[tableSize]();
+        for (size_t i = 0; i < tableSize; ++i) {
+            table[i] = nullptr;  // Initialize all bucket heads to nullptr
+        }
     }
 
     ~TranspositionTable() {
+        // Free all nodes in each bucket
+        for (size_t i = 0; i < tableSize; ++i) {
+            TranspositionEntryNode* current = table[i];
+            while (current != nullptr) {
+                TranspositionEntryNode* temp = current;
+                current = current->next;
+                delete temp;
+            }
+        }
         delete[] table;
     }
 
-    void set(TranspositionEntry& entry) {
-        table[entry.hashKey % tableSize] = entry;
+    void incrementAge() {
+        ++searchAge;
     }
 
-    TranspositionEntry& get(uint64_t hashKey) {
-        return table[hashKey % tableSize];
+    void set(const TranspositionEntry& newEntry) {
+        size_t index = newEntry.hashKey % tableSize;
+        TranspositionEntryNode** currentPointer = &table[index];
+        TranspositionEntryNode* replaceCandidate = nullptr;
+        TranspositionEntryNode* leastValuableCandidate = nullptr;
+        int leastValuableScore = INT_MAX;
+
+        int count = 1;
+        while (*currentPointer != nullptr) {
+            TranspositionEntry& entry = (*currentPointer)->entry;
+            if (entry.hashKey == newEntry.hashKey) {
+                if ((entry.nodeType != NodeType::PV && (newEntry.nodeType == NodeType::PV || newEntry.depth >= entry.depth)) || (entry.nodeType == NodeType::PV && newEntry.nodeType == NodeType::PV && newEntry.depth >= entry.depth)){
+                    replaceCandidate = *currentPointer;
+                    break;
+                }
+            }
+
+            int entryScore = calculateEntryScore(entry, (*currentPointer)->age);
+            if (entryScore < leastValuableScore) {
+                leastValuableScore = entryScore;
+                leastValuableCandidate = *currentPointer;
+            }
+
+            currentPointer = &((*currentPointer)->next);
+            count += 1;
+        }
+
+        if (replaceCandidate != nullptr) {
+            replaceNode(replaceCandidate, newEntry);
+        } else if (count < ENTRIES_PER_BUCKET) {
+            TranspositionEntryNode* newNode = new TranspositionEntryNode(newEntry, searchAge);
+            newNode->next = *currentPointer;
+            *currentPointer = newNode;
+        } else if (leastValuableCandidate != nullptr) {
+            replaceNode(leastValuableCandidate, newEntry);
+        } else {
+            assert(false);
+        }
+    }
+
+    int calculateEntryScore(const TranspositionEntry& entry, uint16_t age) {
+        int score = EntryValues::DEPTH * entry.depth;
+        score += EntryValues::PV_NODE * (entry.nodeType == NodeType::PV);
+        score += EntryValues::AGE * (searchAge - age);
+        score += EntryValues::WINDOW_SIZE * (entry.alpha - entry.beta);
+        return score;
+    }
+
+    void replaceNode(TranspositionEntryNode* node, const TranspositionEntry& newEntry) {
+        node->entry = newEntry;
+        node->age = searchAge;
+    }
+
+    TranspositionEntry get(uint64_t hashKey, uint16_t depth, int alpha, int beta) {
+        size_t index = hashKey % tableSize;
+        TranspositionEntryNode* current = table[index];
+        while (current != nullptr) {
+            TranspositionEntry& entry = current->entry;
+            if (entry.hashKey == hashKey && entry.depth >= depth && entry.alpha <= alpha && entry.beta >= beta) {
+                return entry;
+            }
+            current = current->next;
+        }
+        return TranspositionEntry();
     }
 };
 
@@ -374,11 +492,11 @@ public:
 
     SearchResult quiescent(int alpha, int beta) {
         uint64_t hashKey = board.hash();
-        TranspositionEntry& foundEntry = transpositionTable.get(hashKey);
-        if (foundEntry.hashKey == hashKey && foundEntry.alpha <= alpha && foundEntry.beta >= beta) {
+        TranspositionEntry foundEntry = transpositionTable.get(hashKey, 0, alpha, beta);
+        if (foundEntry.isValid()) {
             return foundEntry.result;
         }
-        TranspositionEntry entry = {hashKey, 0, alpha, beta, {Move::NULL_MOVE, INT_MIN + 1, true}};
+        TranspositionEntry entry = {hashKey, 0, alpha, beta};
 
         if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
             entry.result.score = ResultValues[GameResult::DRAW];
@@ -407,7 +525,10 @@ public:
                     entry.result.move = capture;
                 }
                 if (score > alpha) alpha = score;
-                if (alpha >= beta) break;
+                if (alpha >= beta) {
+                    entry.nodeType = NodeType::CUT;
+                    break;
+                }
             }
         }
 
@@ -419,11 +540,11 @@ public:
         if (depth == 0) return quiescent(alpha, beta);
 
         uint64_t hashKey = board.hash();
-        TranspositionEntry foundEntry = transpositionTable.get(hashKey);
-        if (foundEntry.hashKey == hashKey && foundEntry.depth >= depth && foundEntry.alpha <= alpha && foundEntry.beta >= beta) {
+        TranspositionEntry foundEntry = transpositionTable.get(hashKey, depth, alpha, beta);
+           if (foundEntry.isValid()) {
             return foundEntry.result;
         }
-        TranspositionEntry entry = {hashKey, depth, alpha, beta, {Move::NULL_MOVE, INT_MIN + 1, true}};
+        TranspositionEntry entry = {hashKey, depth, alpha, beta};
 
         if (board.isRepetition() || board.isHalfMoveDraw() || board.isInsufficientMaterial()) {
             entry.result.score = ResultValues[GameResult::DRAW];
@@ -459,8 +580,12 @@ public:
             }
             if (score > alpha) {
                 alpha = score;
+                entry.nodeType = NodeType::PV;
             }
-            if (alpha >= beta) break;
+            if (alpha >= beta) {
+                entry.nodeType = NodeType::CUT;
+                break;
+            }
         }
 
         transpositionTable.set(entry);
@@ -470,6 +595,7 @@ public:
     SearchResult bestMove(float maxSeconds) {
         logFile << "Max Seconds: " << maxSeconds << std::endl;
 
+        transpositionTable.incrementAge();
         std::chrono::time_point<std::chrono::system_clock> startTime = std::chrono::system_clock::now();
 
         uint16_t depth = 0;
