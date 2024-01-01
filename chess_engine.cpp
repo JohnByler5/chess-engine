@@ -229,7 +229,6 @@ struct TranspositionEntry {
 
 const size_t TABLE_SIZE = 1024 * 1024 * 1024 / sizeof(TranspositionEntry);  // 1GB of memory space, should be 32 bytes per entry
 
-
 class TranspositionTable {
 private:
     TranspositionEntry* table;
@@ -266,7 +265,6 @@ private:
     
 public:
     ChessEngine(const std::string& fen, std::string& logPath) : board(Board(fen)), mgValue(0), egValue(0), logFile(logPath), transpositionTable(TABLE_SIZE) {
-        // std::cout 
         init();
     }
 
@@ -545,7 +543,7 @@ public:
     }
 
     void handleUci() {
-        std::cout << "id name ChessEngine-v0.2.0" << std::endl;
+        std::cout << "id name ChessEngine-v0.2.1" << std::endl;
         std::cout << "id author John Byler" << std::endl;
         std::cout << "uciok" << std::endl;
     }
@@ -600,20 +598,19 @@ public:
     }
 };
 
-
 int main() {
     initTables();
     
-    // std::string fen = constants::STARTPOS;
-    std::string fen = "r3r1k1/1ppq1ppp/p1np1n2/2b1p3/2B1P1b1/P1PPBN2/1P1NQPPP/R4RK1 w - - 0 11";
+    std::string fen = constants::STARTPOS;
+    // std::string fen = "r3r1k1/1ppq1ppp/p1np1n2/2b1p3/2B1P1b1/P1PPBN2/1P1NQPPP/R4RK1 w - - 0 11";
     std::string logPath = "/Users/john/VS Code Projects/C++/chess-engine/log.txt";
 
-    ChessEngine engine(fen, logPath);
-    SearchResult result = engine.bestMove(1000);
-    std::cout << "Selected: " << result.move << " - " << result.score << std::endl;
-
     // ChessEngine engine(fen, logPath);
-    // engine.uciLoop();
+    // SearchResult result = engine.bestMove(1000);
+    // std::cout << "Selected: " << result.move << " - " << result.score << std::endl;
+
+    ChessEngine engine(fen, logPath);
+    engine.uciLoop();
 
     return 0;
 }
